@@ -7,10 +7,13 @@ dist/
 build/
 *.egg-info/
 data/processed/
+data/corpus/
+data/source/
+data/sources.jsonl
+data/tokenizer/
 runs/
 checkpoints/
 *.safetensors
 *.pt
 *.pth
 *.bin
-

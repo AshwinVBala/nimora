@@ -1,0 +1,2 @@
+{"source_id":"example/project","path":"/absolute/path/to/clean/checkout","source_url":"https://git.example.com/example/project","license_spdx":"Apache-2.0","license_file":"LICENSE","revision":"replace-with-full-git-sha","authorized":true}
+{"source_id":"example/library","path":"/absolute/path/to/another/clean/checkout","source_url":"https://git.example.com/example/library","license_spdx":"MIT","license_file":"LICENSE","revision":"replace-with-full-git-sha","authorized":true}

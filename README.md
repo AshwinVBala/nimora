@@ -88,13 +88,48 @@ Never train on private repositories, prompts, or interaction logs without explic
 authorization. Preserve source, license, commit, and deduplication metadata in the
 dataset-production system even if the packed training shards omit it.
 
+## Build the licensed source corpus
+
+Nimora does not scrape repositories or infer that publicly accessible code is safe to
+train on. Copy `data/examples/sources.jsonl` to the ignored `data/sources.jsonl` and
+edit it. Every row must describe a clean local Git checkout, explicitly assert
+authorization, pin the full
+commit SHA, declare an allowlisted SPDX license, and identify a tracked license-evidence
+file. Use at least two repositories so validation can remain repository-disjoint.
+
+Review `configs/corpus-policy.yaml`, then build the corpus:
+
+```bash
+nimora build-corpus \
+  --sources data/sources.jsonl \
+  --policy configs/corpus-policy.yaml \
+  --output-dir data/corpus
+```
+
+The builder reads only Git-tracked files and refuses dirty checkouts, revision drift,
+unapproved licenses, missing license evidence, and an existing output directory. It
+filters binary, oversized, generated, vendored, secret-pattern-bearing, and
+email-address-bearing files; performs exact and near-duplicate removal; and assigns
+entire repositories to a stable train or validation split.
+
+Its outputs are:
+
+- `train.jsonl` and `validation.jsonl`: normalized text plus source URL, revision,
+  SPDX declaration, license-evidence hash, repository path, content hash, and split.
+- `audit.jsonl`: one inclusion or rejection decision per tracked file, without rejected
+  file contents.
+- `manifest.json`: policy digest, immutable source lock, counts, and rejection summary.
+
+The license declaration remains your responsibility; recording a license file and hash
+is provenance evidence, not an automated legal conclusion.
+
 ## Prepare controller data
 
 Train the 32K byte-level BPE tokenizer on a representative licensed mixture:
 
 ```bash
 nimora train-tokenizer \
-  --input data/source/code.jsonl \
+  --input data/corpus/train.jsonl \
   --input data/source/trajectories.jsonl \
   --output data/tokenizer/tokenizer.json \
   --vocab-size 32768
@@ -104,12 +139,14 @@ Create separate train and validation shards:
 
 ```bash
 nimora prepare \
-  --input data/source/train.jsonl \
+  --input data/corpus/train.jsonl \
+  --input data/source/train-trajectories.jsonl \
   --tokenizer data/tokenizer/tokenizer.json \
   --output-dir data/processed/train
 
 nimora prepare \
-  --input data/source/validation.jsonl \
+  --input data/corpus/validation.jsonl \
+  --input data/source/validation-trajectories.jsonl \
   --tokenizer data/tokenizer/tokenizer.json \
   --output-dir data/processed/validation
 ```
@@ -158,6 +195,7 @@ Static checks do not allocate a model or touch a GPU:
 ```bash
 python -m compileall -q src tests
 pytest -q tests/test_serialization.py tests/test_config.py
+pytest -q tests/test_corpus.py
 ruff check src tests
 ```
 

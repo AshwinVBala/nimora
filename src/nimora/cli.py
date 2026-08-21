@@ -32,6 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     estimate.add_argument("--config", required=True)
     estimate.set_defaults(handler=_estimate)
 
+    corpus = subparsers.add_parser(
+        "build-corpus", help="Build a licensed, provenance-tracked source corpus"
+    )
+    corpus.add_argument("--sources", required=True)
+    corpus.add_argument("--policy", required=True)
+    corpus.add_argument("--output-dir", required=True)
+    corpus.set_defaults(handler=_build_corpus)
+
     controller = subparsers.add_parser("train-controller", help="Pretrain Nimora Controller")
     controller.add_argument("--config", required=True)
     controller.set_defaults(handler=_train_controller)
@@ -74,6 +82,13 @@ def _estimate(args) -> None:
 
     config = load_controller_config(Path(args.config))
     print(json.dumps(estimate_model_size(config.model), indent=2))
+
+
+def _build_corpus(args) -> None:
+    from nimora.corpus import build_corpus
+
+    manifest = build_corpus(args.sources, args.policy, args.output_dir)
+    print(json.dumps(manifest, indent=2))
 
 
 def _train_controller(args) -> None:

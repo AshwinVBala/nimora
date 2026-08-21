@@ -1,0 +1,71 @@
+allowed_licenses:
+  - Apache-2.0
+  - BSD-2-Clause
+  - BSD-3-Clause
+  - ISC
+  - MIT
+
+allowed_extensions:
+  - .c
+  - .cc
+  - .cpp
+  - .cs
+  - .css
+  - .go
+  - .h
+  - .hpp
+  - .html
+  - .java
+  - .js
+  - .json
+  - .jsx
+  - .kt
+  - .kts
+  - .md
+  - .php
+  - .proto
+  - .py
+  - .rb
+  - .rs
+  - .rst
+  - .scala
+  - .sh
+  - .sql
+  - .swift
+  - .toml
+  - .ts
+  - .tsx
+  - .xml
+  - .yaml
+  - .yml
+
+allowed_filenames:
+  - Dockerfile
+  - Makefile
+
+excluded_globs:
+  - "**/.env*"
+  - "**/*.lock"
+  - "**/*.map"
+  - "**/*.min.css"
+  - "**/*.min.js"
+  - "**/*_generated.*"
+  - "**/*.generated.*"
+  - "**/.venv/**"
+  - "**/__pycache__/**"
+  - "**/build/**"
+  - "**/coverage/**"
+  - "**/dist/**"
+  - "**/node_modules/**"
+  - "**/package-lock.json"
+  - "**/target/**"
+  - "**/vendor/**"
+
+min_file_chars: 32
+max_file_bytes: 1000000
+validation_fraction: 0.02
+split_salt: nimora-corpus-v1
+near_duplicate_hamming_distance: 3
+require_clean_git: true
+require_pinned_revision: true
+reject_sensitive_content: true

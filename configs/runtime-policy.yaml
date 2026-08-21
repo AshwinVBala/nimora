@@ -1,0 +1,28 @@
+max_steps: 64
+max_context_chars: 120000
+max_observation_chars: 30000
+max_file_bytes: 1000000
+command_timeout_seconds: 300
+require_evidence_before_completion: true
+require_passing_checks_for_approval: true
+allow_regex_search: false
+
+allow_write: true
+allow_shell: false
+allow_git_mutation: false
+allow_git_push: false
+allow_remote_read: false
+allow_open_change: false
+allow_approve_change: false
+allow_merge_change: false
+
+allowed_commands: []
+allowed_write_globs:
+  - "**"
+protected_globs:
+  - .git
+  - ".git/**"
+  - ".env*"
+  - "**/.env*"
+  - "**/*.key"
+  - "**/*.pem"

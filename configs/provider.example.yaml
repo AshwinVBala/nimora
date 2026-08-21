@@ -1,0 +1,4 @@
+provider: github
+repository: owner/repository
+base_url: https://api.github.com
+token_env: NIMORA_GIT_TOKEN

@@ -38,6 +38,71 @@ The controller is a decoder-only Transformer with RMSNorm, RoPE, grouped-query
 attention, SwiGLU, tied embeddings, PyTorch scaled-dot-product attention, selective
 loss masking, gradient checkpointing, and atomic resumable checkpoints.
 
+## Nimora Runtime
+
+The repository also contains a model-neutral coding-agent runtime. It works with an
+OpenAI-compatible chat endpoint such as a local vLLM or llama.cpp server, so the agent
+loop can be evaluated and used to collect trajectories before Nimora's own weights are
+trained.
+
+The loop exposes typed workspace, shell, local Git, and remote change-management tools.
+Every action is schema-validated and policy-checked. Existing files require the SHA-256
+returned by the prior read before they can be replaced. Git branches, commits, and pushes
+require the expected HEAD SHA. Remote approval and merge require the runtime to fetch the
+change, diff, and non-empty passing checks first, and the final mutation remains bound to
+that exact head revision.
+
+Review `configs/runtime-policy.yaml`, then run against a compatible endpoint:
+
+```bash
+nimora agent-run \
+  --workspace /absolute/path/to/repository \
+  --policy configs/runtime-policy.yaml \
+  --endpoint http://127.0.0.1:8000/v1 \
+  --model Qwen/Qwen3-4B \
+  --task "Find and fix the parser regression"
+```
+
+The checked-in policy permits concurrency-safe workspace edits but disables shell, Git
+mutation, push, remote reads, PR creation, approval, and merge. Enable each capability
+deliberately. `WorkspaceBoundary` prevents path traversal and symlink escapes, but it is
+not an operating-system sandbox. Run shell-enabled agents inside a disposable container
+or VM because tests and build tools execute repository code.
+
+### Git providers
+
+Copy `configs/provider.example.yaml`, choose `github`, `gitlab`, `gitea`, or `forgejo`,
+and set the named token environment variable. A Forgejo-specific example is available at
+`configs/provider-forgejo.example.yaml`. Tokens are read from the environment and are
+never stored in the configuration or trajectory metadata. Pass the file with
+`--provider-config`. Gitea and Forgejo require their instance base URL (or a URL already
+ending in `/api/v1`). Forgejo is a distinct adapter because its compatibility with Gitea
+is not guaranteed across releases. Verify the instance's `/api/swagger` documentation
+when targeting a new Forgejo release. Custom providers can implement the `GitProvider`
+protocol and register the same provider tools.
+
+Trajectory recording is opt-in through `--record trajectories/sessions.jsonl`. Common
+secret patterns are redacted and strings are bounded, but logs must still be reviewed
+before entering a training corpus.
+
+### Coding evaluations
+
+Evaluation cases use pinned local Git repositories and explicit command checks. Nimora
+clones each case into a disposable directory, runs the agent, executes checks, and writes
+a JSONL result with status and a working-tree fingerprint:
+
+```bash
+nimora eval-run \
+  --cases evals/cases.jsonl \
+  --policy configs/runtime-policy.yaml \
+  --endpoint http://127.0.0.1:8000/v1 \
+  --model Qwen/Qwen3-4B \
+  --output evals/results/qwen3-4b.jsonl
+```
+
+Evaluation check commands are trusted code and must use an isolated container or VM.
+Start from `evals/examples/cases.jsonl`; do not treat the placeholder case as runnable.
+
 ## Operating system and PyTorch
 
 Use a ROCm-supported Linux release. Install AMD's Radeon/ROCm software and its matching

@@ -1,0 +1,4 @@
+provider: forgejo
+repository: owner/repository
+base_url: https://forgejo.example.com
+token_env: NIMORA_FORGEJO_TOKEN

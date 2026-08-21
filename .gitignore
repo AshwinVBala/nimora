@@ -11,6 +11,8 @@ data/corpus/
 data/source/
 data/sources.jsonl
 data/tokenizer/
+evals/results/
+trajectories/
 runs/
 checkpoints/
 *.safetensors

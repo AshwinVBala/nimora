@@ -47,6 +47,10 @@ def build_parser() -> argparse.ArgumentParser:
     lora = subparsers.add_parser("train-lora", help="Post-train Qwen with LoRA")
     lora.add_argument("--config", required=True)
     lora.set_defaults(handler=_train_lora)
+
+    from nimora.agent.cli import add_agent_parsers
+
+    add_agent_parsers(subparsers)
     return parser
 
 

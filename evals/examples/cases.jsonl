@@ -1,0 +1,1 @@
+{"case_id":"example-parser-fix","repository":"/absolute/path/to/local/eval/repository","revision":"0000000000000000000000000000000000000000","task":"Fix the documented empty-input parser regression without changing unrelated behavior.","checks":[{"argv":["pytest","-q","tests/test_parser.py"],"cwd":"."}]}

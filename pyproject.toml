@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nimora"
+version = "0.1.0"
+description = "Training stack for the Nimora action-native coding controller and coding-model adapters"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Nimora contributors" }]
+dependencies = [
+  "numpy>=1.26,<3",
+  "pyyaml>=6.0",
+  "tokenizers>=0.20",
+]
+
+[project.optional-dependencies]
+train = ["torch>=2.7"]
+lora = [
+  "torch>=2.7",
+  "transformers>=4.51",
+  "peft>=0.15",
+  "accelerate>=1.6",
+]
+dev = ["pytest>=8.3", "ruff>=0.11"]
+
+[project.scripts]
+nimora = "nimora.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nimora"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+

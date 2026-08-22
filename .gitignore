@@ -19,3 +19,4 @@ checkpoints/
 *.pt
 *.pth
 *.bin
+nimora-*.out

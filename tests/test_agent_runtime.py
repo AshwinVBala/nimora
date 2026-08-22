@@ -1,4 +1,5 @@
 import hashlib
+import json
 
 import pytest
 
@@ -70,6 +71,20 @@ def test_runtime_collects_evidence_before_completion(tmp_path):
     result = AgentRuntime(backend, tools).run("Inspect the README.")
     assert result.status == "completed"
     assert result.steps == 2
+    assistant_messages = [
+        json.loads(message["content"])
+        for message in result.messages
+        if message["role"] == "assistant"
+    ]
+    assert assistant_messages == [
+        {
+            "action": {
+                "name": "workspace.read",
+                "arguments": {"path": "README.md"},
+            }
+        },
+        {"result": "Verified the requested file."},
+    ]
 
 
 def test_runtime_rejects_unsupported_completion_without_evidence(tmp_path):

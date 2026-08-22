@@ -59,3 +59,10 @@ def assert_training_runtime(device) -> None:
         raise RuntimeError(
             "A non-ROCm PyTorch build was detected. Install AMD's ROCm PyTorch build."
         )
+
+
+def assert_gpu_runtime(device) -> None:
+    """Require a CUDA-compatible GPU without restricting its software backend."""
+    torch = require_torch()
+    if device.type != "cuda" or not torch.cuda.is_available():
+        raise RuntimeError("LoRA training requires a CUDA-compatible GPU runtime")

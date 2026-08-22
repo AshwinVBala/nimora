@@ -1,30 +1,32 @@
 model_name: Qwen/Qwen3-4B
-model_revision: null
+model_revision: 1cfa9a7208912126459214e8b04321603b3df60c
 train_files:
-  - data/trajectories/train.jsonl
+  - data/trajectories/alpha-v0.0.1/train.jsonl
 validation_files:
-  - data/trajectories/validation.jsonl
-output_dir: runs/nimora-code-4b-lora
+  - data/trajectories/alpha-v0.0.1/validation.jsonl
+output_dir: runs/nimora-agent-orcd
 sequence_length: 2048
 precision: fp16
 micro_batch_size: 1
-gradient_accumulation_steps: 32
+gradient_accumulation_steps: 1
 learning_rate: 0.0001
 weight_decay: 0.01
 warmup_ratio: 0.03
-epochs: 2.0
-logging_steps: 5
+epochs: 1.0
+max_steps: null
+logging_steps: 10
 evaluation_steps: 100
-save_steps: 100
+save_steps: 25
 save_total_limit: 3
 seed: 1337
 gradient_checkpointing: true
-dataloader_num_workers: 2
-device: auto
+dataloader_num_workers: 4
+device: cuda
 resume_from_checkpoint: null
+assistant_mask_scope: last
 
 quantization:
-  enabled: false
+  enabled: true
   quant_type: nf4
   double_quantization: true
 

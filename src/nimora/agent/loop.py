@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from nimora.agent.recording import TrajectoryRecorder
 from nimora.agent.tools import ToolRegistry
 from nimora.agent.types import JsonObject, ModelBackend
-
+from nimora.serialization import canonical_json, decision_dict
 
 DEFAULT_SYSTEM_PROMPT = """You are Nimora, a careful software-engineering partner.
 Inspect evidence before editing. Make small changes, verify them, and report uncertainty.
@@ -54,18 +54,25 @@ class AgentRuntime:
                 return RunResult("backend_error", result, step - 1, messages)
 
             if decision.plan:
-                plan_message = {
-                    "role": "assistant",
-                    "content": json.dumps({"plan": decision.plan}, sort_keys=True),
-                }
-                messages.append(plan_message)
                 self.recorder.plan(decision.plan)
             if decision.result is not None:
                 if self.policy.require_evidence_before_completion and observations == 0:
                     result = "Completion rejected because no tool evidence was collected."
                     self.recorder.finish(result, "insufficient_evidence", step)
                     return RunResult("insufficient_evidence", result, step, messages)
-                messages.append({"role": "assistant", "content": decision.result})
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": canonical_json(
+                            decision_dict(
+                                {
+                                    "plan": decision.plan,
+                                    "result": decision.result,
+                                }
+                            )
+                        ),
+                    }
+                )
                 self.recorder.finish(decision.result, "completed", step)
                 return RunResult("completed", decision.result, step, messages)
 
@@ -74,7 +81,14 @@ class AgentRuntime:
             messages.append(
                 {
                     "role": "assistant",
-                    "content": json.dumps({"action": action.to_dict()}, sort_keys=True),
+                    "content": canonical_json(
+                        decision_dict(
+                            {
+                                "plan": decision.plan,
+                                "action": action.to_dict(),
+                            }
+                        )
+                    ),
                 }
             )
             self.recorder.action(action)

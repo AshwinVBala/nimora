@@ -8,7 +8,6 @@ from typing import Any
 
 from nimora.agent.types import Action, JsonObject, ToolResult
 
-
 REDACTIONS = [
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END[^-]+-----"),
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
@@ -39,20 +38,28 @@ class TrajectoryRecorder:
     def __init__(self, output: str | Path | None) -> None:
         self.output = Path(output) if output is not None else None
         self.messages: list[JsonObject] = []
+        self._pending_plan: str | None = None
 
     def begin(self, system_prompt: str, task: str) -> None:
+        self._pending_plan = None
         self.messages = [
             {"role": "system", "content": _sanitize(system_prompt)},
             {"role": "user", "content": _sanitize(task)},
         ]
 
     def plan(self, content: str) -> None:
-        self.messages.append(
-            {"role": "assistant", "channel": "plan", "content": _sanitize(content)}
-        )
+        if self._pending_plan is not None:
+            raise ValueError("A recorded plan must be consumed by the next decision")
+        self._pending_plan = str(_sanitize(content))
+
+    def _decision(self, value: JsonObject) -> None:
+        if self._pending_plan is not None:
+            value = {"plan": self._pending_plan, **value}
+            self._pending_plan = None
+        self.messages.append({"role": "assistant", "decision": _sanitize(value)})
 
     def action(self, action: Action) -> None:
-        self.messages.append({"role": "assistant", "action": _sanitize(action.to_dict())})
+        self._decision({"action": action.to_dict()})
 
     def observation(self, name: str, result: ToolResult) -> None:
         self.messages.append(
@@ -64,9 +71,7 @@ class TrajectoryRecorder:
         )
 
     def finish(self, result: str, status: str, steps: int) -> None:
-        self.messages.append(
-            {"role": "assistant", "channel": "result", "content": _sanitize(result)}
-        )
+        self._decision({"result": str(_sanitize(result))})
         if self.output is None:
             return
         self.output.parent.mkdir(parents=True, exist_ok=True)
@@ -79,4 +84,3 @@ class TrajectoryRecorder:
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
             handle.flush()
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-

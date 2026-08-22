@@ -137,10 +137,9 @@ or an agent trajectory:
   "messages": [
     {"role":"system","content":"Choose small, verifiable actions."},
     {"role":"user","content":"Fix the parser regression."},
-    {"role":"assistant","channel":"plan","content":"Locate the failing test first."},
-    {"role":"assistant","action":{"name":"search","arguments":{"query":"parser","path":"tests"}}},
-    {"role":"tool","name":"search","content":"tests/test_parser.py:14"},
-    {"role":"assistant","channel":"result","content":"Fixed and verified with tests."}
+    {"role":"assistant","decision":{"plan":"Locate the failing test first.","action":{"name":"workspace.search","arguments":{"query":"parser","path":"tests"}}}},
+    {"role":"tool","name":"workspace.search","content":"tests/test_parser.py:14"},
+    {"role":"assistant","decision":{"result":"Fixed and verified with tests."}}
   ]
 }
 ```
@@ -247,11 +246,60 @@ The LoRA lane consumes trajectory JSONL directly and masks loss to assistant tur
 nimora train-lora --config configs/lora-qwen3-4b.yaml
 ```
 
-It intentionally uses ordinary FP16 LoRA—not QLoRA—to avoid making the first training
-run depend on a ROCm quantization stack. The default rank is 16 and targets attention and
-SwiGLU projection layers. Trajectories are indexed by byte offset and tokenized lazily, so
-the complete corpus is never materialized in RAM. The final adapter and tokenizer are
-written under the configured output directory.
+The default configuration uses ordinary FP16 LoRA for the ROCm workstation. Set
+`quantization.enabled: true` to use 4-bit NF4 QLoRA on a supported CUDA runtime, such as
+a Colab T4. The default rank is 16 and targets attention and SwiGLU projection layers.
+Trajectories are indexed by byte offset and tokenized lazily, so the complete corpus is
+never materialized in RAM. The final adapter and tokenizer are written under the
+configured output directory.
+
+## Run QLoRA on MIT ORCD
+
+The ORCD lane defaults to one L40S in `mit_normal_gpu`, uses scratch storage for the
+Python environment and model cache, saves resumable Trainer checkpoints, and submits
+evaluation only after training succeeds. It never publishes weights automatically.
+
+From an ORCD Open OnDemand terminal, clone or update the repository and inspect the
+resources available to your account:
+
+```bash
+cd ~/orcd/scratch
+git clone https://github.com/AshwinVBala/nimora.git nimora
+cd nimora
+bash slurm/discover-orcd.sh
+```
+
+Build the pinned environment once as a CPU job:
+
+```bash
+sbatch --export=ALL,NIMORA_ROOT="$PWD" slurm/bootstrap.sbatch
+```
+
+After that job completes successfully, submit the resumable train-to-evaluation chain:
+
+```bash
+bash slurm/submit-alpha.sh
+```
+
+The submission helper requires a clean Git tree so every run records an exact source
+revision. It prints both job IDs and places logs, resolved configuration, provenance,
+checkpoints, the final adapter, and `evaluation-report.json` under
+`~/orcd/scratch/nimora/runs/<run-name>/`. Monitor with `squeue --me`, inspect completed
+jobs with `sacct -j <job-id>`, and follow the printed log paths with `tail -f`.
+
+Resource choices are environment overrides. For example, after confirming account
+access with the discovery script:
+
+```bash
+NIMORA_GPUS=h200:1 bash slurm/submit-alpha.sh
+NIMORA_PARTITION=mit_preemptable NIMORA_TRAIN_TIME=12:00:00 bash slurm/submit-alpha.sh
+```
+
+The preemptable queue can interrupt a job. The training batch script requests requeue,
+handles the advance signal, and resumes from the newest complete `checkpoint-*`
+directory. Keep Hugging Face tokens out of batch files; the pinned public Qwen base does
+not need one. Review the evaluation report and publication gate before separately
+uploading an adapter.
 
 ## Validation without training
 

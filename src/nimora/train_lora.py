@@ -7,8 +7,8 @@ from typing import Any, BinaryIO
 
 import yaml
 
-from nimora.runtime import assert_training_runtime, require_torch, resolve_device
-from nimora.serialization import canonical_json
+from nimora.runtime import assert_gpu_runtime, require_torch, resolve_device
+from nimora.serialization import canonical_json, canonicalize_trajectory_messages
 
 
 @dataclass(slots=True)
@@ -38,8 +38,20 @@ class LoraAdapterConfig:
 
 
 @dataclass(slots=True)
+class LoraQuantizationConfig:
+    enabled: bool = False
+    quant_type: str = "nf4"
+    double_quantization: bool = True
+
+    def validate(self) -> None:
+        if self.quant_type not in {"nf4", "fp4"}:
+            raise ValueError("LoRA quant_type must be nf4 or fp4")
+
+
+@dataclass(slots=True)
 class LoraRunConfig:
     model_name: str = "Qwen/Qwen3-4B"
+    model_revision: str | None = None
     train_files: list[str] = field(default_factory=lambda: ["data/train.jsonl"])
     validation_files: list[str] = field(default_factory=lambda: ["data/validation.jsonl"])
     output_dir: str = "runs/nimora-code-4b-lora"
@@ -51,6 +63,7 @@ class LoraRunConfig:
     weight_decay: float = 0.01
     warmup_ratio: float = 0.03
     epochs: float = 2.0
+    max_steps: int | None = None
     logging_steps: int = 5
     evaluation_steps: int = 100
     save_steps: int = 100
@@ -60,10 +73,13 @@ class LoraRunConfig:
     dataloader_num_workers: int = 2
     device: str = "auto"
     resume_from_checkpoint: str | None = None
+    assistant_mask_scope: str = "all"
     adapter: LoraAdapterConfig = field(default_factory=LoraAdapterConfig)
+    quantization: LoraQuantizationConfig = field(default_factory=LoraQuantizationConfig)
 
     def validate(self) -> None:
         self.adapter.validate()
+        self.quantization.validate()
         if self.precision not in {"fp16", "bf16"}:
             raise ValueError("LoRA precision must be fp16 or bf16")
         if self.sequence_length < 128:
@@ -72,8 +88,12 @@ class LoraRunConfig:
             raise ValueError("LoRA batch sizes must be positive")
         if self.learning_rate <= 0.0 or self.epochs <= 0.0:
             raise ValueError("LoRA learning_rate and epochs must be positive")
+        if self.max_steps is not None and self.max_steps < 1:
+            raise ValueError("LoRA max_steps must be positive when set")
         if self.dataloader_num_workers < 0:
             raise ValueError("dataloader_num_workers cannot be negative")
+        if self.assistant_mask_scope not in {"all", "last"}:
+            raise ValueError("assistant_mask_scope must be all or last")
         if not self.train_files or not self.validation_files:
             raise ValueError("LoRA train_files and validation_files cannot be empty")
 
@@ -82,9 +102,17 @@ def load_lora_config(path: str | Path) -> LoraRunConfig:
     with Path(path).open("r", encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
     adapter_values = raw.get("adapter", {})
-    run_values = {key: value for key, value in raw.items() if key != "adapter"}
+    quantization_values = raw.get("quantization", {})
+    run_values = {
+        key: value for key, value in raw.items() if key not in {"adapter", "quantization"}
+    }
     adapter = LoraAdapterConfig(**adapter_values)
-    config = LoraRunConfig(**run_values, adapter=adapter)
+    quantization = LoraQuantizationConfig(**quantization_values)
+    config = LoraRunConfig(
+        **run_values,
+        adapter=adapter,
+        quantization=quantization,
+    )
     config.validate()
     return config
 
@@ -92,10 +120,10 @@ def load_lora_config(path: str | Path) -> LoraRunConfig:
 def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     """Convert Nimora trajectories into portable system/user/assistant chat turns."""
     normalized: list[dict[str, str]] = []
-    for message in messages:
+    for message in canonicalize_trajectory_messages(messages):
         role = message.get("role")
-        if role == "assistant" and "action" in message:
-            content = canonical_json(message["action"])
+        if role == "assistant" and "decision" in message:
+            content = canonical_json(message["decision"])
             normalized.append({"role": "assistant", "content": content})
         elif role in {"tool", "observation"}:
             name = message.get("name", "environment")
@@ -105,11 +133,8 @@ def normalize_messages(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
                     "content": f"OBSERVATION[{name}]\n{message.get('content', '')}",
                 }
             )
-        elif role in {"system", "user", "assistant"}:
+        elif role in {"system", "user"}:
             content = str(message.get("content", ""))
-            channel = message.get("channel")
-            if role == "assistant" and channel:
-                content = f"{str(channel).upper()}\n{content}"
             normalized.append({"role": str(role), "content": content})
         else:
             raise ValueError(f"Unsupported role for LoRA data: {role!r}")
@@ -125,11 +150,13 @@ def _fallback_assistant_mask(tokenizer, messages, full_ids: list[int]) -> list[i
             messages[:index],
             tokenize=True,
             add_generation_prompt=True,
+            enable_thinking=False,
         )
         through_ids = tokenizer.apply_chat_template(
             messages[: index + 1],
             tokenize=True,
             add_generation_prompt=False,
+            enable_thinking=False,
         )
         start = min(len(before_ids), len(mask))
         stop = min(len(through_ids), len(mask))
@@ -138,13 +165,48 @@ def _fallback_assistant_mask(tokenizer, messages, full_ids: list[int]) -> list[i
     return mask
 
 
-def tokenize_trajectory(tokenizer, messages, sequence_length: int) -> dict[str, list[int]]:
+def _last_assistant_mask(tokenizer, messages, full_ids: list[int]) -> list[int]:
+    assistant_indices = [
+        index for index, message in enumerate(messages) if message["role"] == "assistant"
+    ]
+    if not assistant_indices:
+        return [0] * len(full_ids)
+    index = assistant_indices[-1]
+    before_ids = tokenizer.apply_chat_template(
+        messages[:index],
+        tokenize=True,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    through_ids = tokenizer.apply_chat_template(
+        messages[: index + 1],
+        tokenize=True,
+        add_generation_prompt=False,
+        enable_thinking=False,
+    )
+    mask = [0] * len(full_ids)
+    start = min(len(before_ids), len(mask))
+    stop = min(len(through_ids), len(mask))
+    for position in range(start, stop):
+        mask[position] = 1
+    return mask
+
+
+def tokenize_trajectory(
+    tokenizer,
+    messages,
+    sequence_length: int,
+    assistant_mask_scope: str = "all",
+) -> dict[str, list[int]]:
+    if assistant_mask_scope not in {"all", "last"}:
+        raise ValueError("assistant_mask_scope must be all or last")
     messages = normalize_messages(messages)
     try:
         encoded = tokenizer.apply_chat_template(
             messages,
             tokenize=True,
             add_generation_prompt=False,
+            enable_thinking=False,
             return_dict=True,
             return_assistant_tokens_mask=True,
             truncation=True,
@@ -160,6 +222,7 @@ def tokenize_trajectory(tokenizer, messages, sequence_length: int) -> dict[str, 
                 messages,
                 tokenize=True,
                 add_generation_prompt=False,
+                enable_thinking=False,
                 truncation=True,
                 max_length=sequence_length,
             )
@@ -168,18 +231,30 @@ def tokenize_trajectory(tokenizer, messages, sequence_length: int) -> dict[str, 
 
     if assistant_mask is None or not any(assistant_mask):
         assistant_mask = _fallback_assistant_mask(tokenizer, messages, input_ids)
+    if assistant_mask_scope == "last":
+        assistant_mask = _last_assistant_mask(tokenizer, messages, input_ids)
     assistant_mask = list(assistant_mask)[: len(input_ids)]
     assistant_mask.extend([0] * (len(input_ids) - len(assistant_mask)))
-    labels = [token if learns else -100 for token, learns in zip(input_ids, assistant_mask)]
+    labels = [
+        token if learns else -100
+        for token, learns in zip(input_ids, assistant_mask, strict=True)
+    ]
     if not any(label != -100 for label in labels):
         raise ValueError("Trajectory contains no trainable assistant tokens")
     return {"input_ids": input_ids, "attention_mask": [1] * len(input_ids), "labels": labels}
 
 
 class LoraTrajectoryDataset:
-    def __init__(self, files: list[str], tokenizer, sequence_length: int) -> None:
+    def __init__(
+        self,
+        files: list[str],
+        tokenizer,
+        sequence_length: int,
+        assistant_mask_scope: str = "all",
+    ) -> None:
         self.tokenizer = tokenizer
         self.sequence_length = sequence_length
+        self.assistant_mask_scope = assistant_mask_scope
         self.rows: list[tuple[str, int, int]] = []
         self._handles: dict[str, BinaryIO] = {}
         for file_value in files:
@@ -226,6 +301,7 @@ class LoraTrajectoryDataset:
                 self.tokenizer,
                 record["messages"],
                 self.sequence_length,
+                self.assistant_mask_scope,
             )
         except (TypeError, ValueError) as error:
             raise ValueError(f"Invalid trajectory at {path}:{line_number}: {error}") from error
@@ -263,17 +339,23 @@ class CausalCollator:
         }
 
 
-def train_lora(config_path: str | Path) -> None:
+def train_lora(config_path: str | Path) -> dict[str, Any]:
     torch = require_torch()
     config = load_lora_config(config_path)
     device = resolve_device(config.device)
-    assert_training_runtime(device)
+    assert_gpu_runtime(device)
 
     try:
-        from peft import LoraConfig, TaskType, get_peft_model
+        from peft import (
+            LoraConfig,
+            TaskType,
+            get_peft_model,
+            prepare_model_for_kbit_training,
+        )
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
+            BitsAndBytesConfig,
             Trainer,
             TrainingArguments,
         )
@@ -281,16 +363,39 @@ def train_lora(config_path: str | Path) -> None:
         raise RuntimeError("Install Nimora with the 'lora' extra before LoRA training") from error
 
     dtype = torch.float16 if config.precision == "fp16" else torch.bfloat16
-    tokenizer = AutoTokenizer.from_pretrained(config.model_name, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        config.model_name,
+        revision=config.model_revision,
+        use_fast=True,
+    )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token = tokenizer.eos_token
-    model = AutoModelForCausalLM.from_pretrained(
-        config.model_name,
-        torch_dtype=dtype,
-        low_cpu_mem_usage=True,
-    )
+    model_kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "low_cpu_mem_usage": True,
+    }
+    if config.model_revision is not None:
+        model_kwargs["revision"] = config.model_revision
+    if config.quantization.enabled:
+        model_kwargs.update(
+            {
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type=config.quantization.quant_type,
+                    bnb_4bit_use_double_quant=config.quantization.double_quantization,
+                    bnb_4bit_compute_dtype=dtype,
+                ),
+                "device_map": {"": device.index or 0},
+            }
+        )
+    model = AutoModelForCausalLM.from_pretrained(config.model_name, **model_kwargs)
     model.config.use_cache = False
-    if config.gradient_checkpointing:
+    if config.quantization.enabled:
+        model = prepare_model_for_kbit_training(
+            model,
+            use_gradient_checkpointing=config.gradient_checkpointing,
+        )
+    elif config.gradient_checkpointing:
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
@@ -307,10 +412,16 @@ def train_lora(config_path: str | Path) -> None:
     model.print_trainable_parameters()
 
     train_dataset = LoraTrajectoryDataset(
-        config.train_files, tokenizer, config.sequence_length
+        config.train_files,
+        tokenizer,
+        config.sequence_length,
+        config.assistant_mask_scope,
     )
     validation_dataset = LoraTrajectoryDataset(
-        config.validation_files, tokenizer, config.sequence_length
+        config.validation_files,
+        tokenizer,
+        config.sequence_length,
+        config.assistant_mask_scope,
     )
     output_dir = Path(config.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -331,6 +442,7 @@ def train_lora(config_path: str | Path) -> None:
         weight_decay=config.weight_decay,
         warmup_ratio=config.warmup_ratio,
         num_train_epochs=config.epochs,
+        max_steps=config.max_steps if config.max_steps is not None else -1,
         logging_steps=config.logging_steps,
         eval_strategy="steps",
         eval_steps=config.evaluation_steps,
@@ -341,7 +453,7 @@ def train_lora(config_path: str | Path) -> None:
         gradient_checkpointing=config.gradient_checkpointing,
         dataloader_num_workers=config.dataloader_num_workers,
         dataloader_persistent_workers=config.dataloader_num_workers > 0,
-        optim="adamw_torch",
+        optim="paged_adamw_8bit" if config.quantization.enabled else "adamw_torch",
         report_to=[],
         remove_unused_columns=False,
         seed=config.seed,
@@ -354,6 +466,15 @@ def train_lora(config_path: str | Path) -> None:
         eval_dataset=validation_dataset,
         data_collator=CausalCollator(tokenizer),
     )
-    trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+    train_output = trainer.train(resume_from_checkpoint=config.resume_from_checkpoint)
+    trainer.save_state()
+    trainer.save_metrics("train", train_output.metrics)
+    evaluation_metrics = trainer.evaluate()
+    trainer.save_metrics("eval", evaluation_metrics)
     trainer.save_model(str(output_dir / "final-adapter"))
     tokenizer.save_pretrained(str(output_dir / "final-adapter"))
+    return {
+        "train": train_output.metrics,
+        "evaluation": evaluation_metrics,
+        "adapter_dir": str(output_dir / "final-adapter"),
+    }
